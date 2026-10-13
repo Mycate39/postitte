@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Postitte
+Comment=Des post-it éditables sur le bureau
+Exec="@BIN@" @ARGS@
+Icon=postitte
+Terminal=false
+Categories=Utility;
+StartupNotify=false
+Actions=new-note;
+
+[Desktop Action new-note]
+Name=Nouvelle note
+Exec="@BIN@" --new
