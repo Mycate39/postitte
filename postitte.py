@@ -12,7 +12,7 @@ import threading
 import urllib.request
 import uuid
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # Sous Wayland, GNOME interdit à une fenêtre de choisir sa position ou de
 # rester sous les autres. En passant par XWayland, tout fonctionne.
