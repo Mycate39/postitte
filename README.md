@@ -39,7 +39,7 @@ Commitez vos modifications, puis :
 ./release.sh 1.1.0
 ```
 
-Le script met à jour `__version__` dans `postitte.py`, commite, pousse sur GitHub et crée la release `v1.1.0` (il nécessite [GitHub CLI](https://cli.github.com)). Les applications installées la proposent ensuite.
+Le script met à jour `__version__` dans `postitte.py`, crée le tag `v1.1.0` et pousse le tout sur GitHub. Le workflow [.github/workflows/release.yml](.github/workflows/release.yml) vérifie le code et publie la release, et les applications installées la proposent.
 
 Si vous créez la release à la main sur GitHub, le tag doit correspondre à `__version__`. Sinon, l'application proposerait la même mise à jour en boucle.
 
