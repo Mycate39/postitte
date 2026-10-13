@@ -13,7 +13,9 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # historique complet, pour lister les changements
 
       - name: Vérifier que le tag correspond à __version__
         run: |
@@ -40,17 +42,24 @@ jobs:
           test -x /usr/bin/postitte
           dpkg -s postitte | grep '^Version:'
 
+      - name: Rédiger les notes de version
+        run: |
+          previous="$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)"
+          {
+            echo "### Installation"
+            echo "Téléchargez **postitte_${GITHUB_REF_NAME#v}_all.deb** ci-dessous puis double-cliquez dessus pour l'installer."
+            echo
+            echo "Déjà installé ? Postitte vous proposera cette mise à jour automatiquement."
+            echo
+            echo "## Nouveautés"
+            git log --no-merges --format='- %s' ${previous:+"$previous.."}"$GITHUB_REF_NAME" \
+              | grep -v '^- Version [0-9]' || echo "- Corrections mineures"
+          } > notes.md
+          cat notes.md
+
       - name: Publier la release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/*.deb \
-            --title "Postitte $GITHUB_REF_NAME" \
-            --notes "$(cat <<EOF
-          ### Installation
-          Téléchargez **postitte_${GITHUB_REF_NAME#v}_all.deb** ci-dessous puis double-cliquez dessus pour l'installer.
-
-          Déjà installé ? Postitte vous proposera cette mise à jour automatiquement.
-          EOF
-          )" \
-            --generate-notes
+            --title "Postitte $GITHUB_REF_NAME" --notes-file notes.md
