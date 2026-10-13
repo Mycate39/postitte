@@ -1,7 +1,7 @@
 name: Release
 
-# Pousser un tag « v1.2.3 » publie la release correspondante sur GitHub,
-# que l'application détecte ensuite comme mise à jour.
+# Pousser un tag « v1.2.3 » construit le paquet .deb et publie la release
+# correspondante sur GitHub, que l'application détecte comme mise à jour.
 on:
   push:
     tags: ["v*"]
@@ -30,7 +30,27 @@ jobs:
           bash -n install.sh
           bash -n uninstall.sh
 
+      - name: Construire le paquet .deb
+        run: bash packaging/build-deb.sh
+
+      - name: Tester l'installation du paquet
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ./dist/*.deb
+          test -x /usr/bin/postitte
+          dpkg -s postitte | grep '^Version:'
+
       - name: Publier la release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "Postitte $GITHUB_REF_NAME" --generate-notes
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.deb \
+            --title "Postitte $GITHUB_REF_NAME" \
+            --notes "$(cat <<EOF
+          ### Installation
+          Téléchargez **postitte_${GITHUB_REF_NAME#v}_all.deb** ci-dessous puis double-cliquez dessus pour l'installer.
+
+          Déjà installé ? Postitte vous proposera cette mise à jour automatiquement.
+          EOF
+          )" \
+            --generate-notes

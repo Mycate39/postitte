@@ -27,7 +27,10 @@ from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 APP_ID = "io.github.postitte"
 DATA_DIR = os.path.join(GLib.get_user_data_dir(), "postitte")
 DATA_FILE = os.path.join(DATA_DIR, "notes.json")
-INSTALLED_BIN = os.path.join(os.path.expanduser("~"), ".local", "bin", "postitte")
+# Installé par le paquet .deb (/usr/bin) ou par install.sh (~/.local/bin) ?
+INSTALLED_FROM_DEB = os.path.realpath(__file__).startswith("/usr/")
+INSTALLED_BIN = ("/usr/bin/postitte" if INSTALLED_FROM_DEB
+                 else os.path.join(os.path.expanduser("~"), ".local", "bin", "postitte"))
 
 GITHUB_REPO = "Mycate39/postitte"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -91,44 +94,66 @@ def parse_version(text):
     return tuple((parts + [0, 0, 0])[:3])
 
 
-def _github_request(url):
-    return urllib.request.Request(url, headers={
-        "Accept": "application/vnd.github+json",
-        "User-Agent": f"Postitte/{__version__}",
-    })
+def _github_request(url, api=True):
+    headers = {"User-Agent": f"Postitte/{__version__}"}
+    if api:
+        headers["Accept"] = "application/vnd.github+json"
+    return urllib.request.Request(url, headers=headers)
+
+
+def _download(url, dest, api=True):
+    with urllib.request.urlopen(_github_request(url, api), timeout=60) as resp,             open(dest, "wb") as f:
+        shutil.copyfileobj(resp, f)
 
 
 def fetch_latest_release():
     with urllib.request.urlopen(_github_request(LATEST_RELEASE_URL), timeout=15) as resp:
         release = json.load(resp)
+    debs = [a["browser_download_url"] for a in release.get("assets", [])
+            if a["name"].endswith(".deb")]
+    notes = (release.get("body") or "").strip()
+    if notes.startswith("### Installation"):
+        # Consignes d'installation pour la page GitHub, inutiles dans l'app.
+        _, _, rest = notes.partition("\n## ")
+        notes = "## " + rest if rest else ""
     return {
         "version": release["tag_name"].lstrip("vV"),
-        "notes": (release.get("body") or "").strip(),
+        "notes": notes,
         "tarball": release["tarball_url"],
+        "deb": debs[0] if debs else None,
     }
 
 
-def download_and_install(tarball_url):
-    """Télécharge le code source de la release et lance son install.sh."""
+def download_and_install(info):
+    """Installe la release : via son paquet .deb si Postitte a été installé
+    ainsi, sinon via le install.sh de son code source."""
     with tempfile.TemporaryDirectory(prefix="postitte-") as tmp:
-        archive = os.path.join(tmp, "release.tar.gz")
-        with urllib.request.urlopen(_github_request(tarball_url), timeout=60) as resp, \
-                open(archive, "wb") as f:
-            shutil.copyfileobj(resp, f)
-        extract_dir = os.path.join(tmp, "src")
-        with tarfile.open(archive) as tar:
-            if hasattr(tarfile, "data_filter"):
-                tar.extractall(extract_dir, filter="data")
-            else:
-                tar.extractall(extract_dir)
-        # GitHub place tout dans un dossier « <utilisateur>-<dépôt>-<commit> ».
-        (top,) = os.listdir(extract_dir)
-        installer = os.path.join(extract_dir, top, "install.sh")
-        result = subprocess.run(["bash", installer, "--update"],
-                                capture_output=True, text=True)
+        if INSTALLED_FROM_DEB:
+            if not info["deb"]:
+                raise RuntimeError("Cette version ne contient pas de paquet .deb.")
+            package = os.path.join(tmp, "postitte.deb")
+            _download(info["deb"], package, api=False)
+            os.chmod(tmp, 0o755)  # dpkg tourne en root mais lit via le dossier
+            command = ["pkexec", "dpkg", "-i", package]
+        else:
+            archive = os.path.join(tmp, "release.tar.gz")
+            _download(info["tarball"], archive)
+            extract_dir = os.path.join(tmp, "src")
+            with tarfile.open(archive) as tar:
+                if hasattr(tarfile, "data_filter"):
+                    tar.extractall(extract_dir, filter="data")
+                else:
+                    tar.extractall(extract_dir)
+            # GitHub place tout dans un dossier « <utilisateur>-<dépôt>-<commit> ».
+            (top,) = os.listdir(extract_dir)
+            command = ["bash", os.path.join(extract_dir, top, "install.sh"), "--update"]
+
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode in (126, 127) and command[0] == "pkexec":
+            raise RuntimeError("Mise à jour annulée : le mot de passe n'a pas été confirmé.")
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip()
-                               or f"install.sh a échoué (code {result.returncode})")
+                               or f"L'installation a échoué (code {result.returncode})")
 
 
 class UpdateDialog(Gtk.Dialog):
@@ -185,7 +210,7 @@ class UpdateDialog(Gtk.Dialog):
 
     def _install_worker(self):
         try:
-            download_and_install(self.info["tarball"])
+            download_and_install(self.info)
         except Exception as err:  # réseau, archive, script d'installation…
             GLib.idle_add(self._on_failed, str(err))
         else:
