@@ -2,7 +2,10 @@
 """Postitte — des post-it éditables directement sur le bureau Ubuntu."""
 
 import json
+import logging
+import logging.handlers
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -27,6 +30,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 APP_ID = "io.github.postitte"
 DATA_DIR = os.path.join(GLib.get_user_data_dir(), "postitte")
 DATA_FILE = os.path.join(DATA_DIR, "notes.json")
+LOG_FILE = os.path.join(DATA_DIR, "postitte.log")
 # Installé par le paquet .deb (/usr/bin) ou par install.sh (~/.local/bin) ?
 INSTALLED_FROM_DEB = os.path.realpath(__file__).startswith("/usr/")
 INSTALLED_BIN = ("/usr/bin/postitte" if INSTALLED_FROM_DEB
@@ -36,6 +40,59 @@ GITHUB_REPO = "Mycate39/postitte"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_CHECK_DELAY = 5            # secondes après le démarrage
 UPDATE_CHECK_INTERVAL = 6 * 3600  # puis toutes les 6 heures
+
+log = logging.getLogger("postitte")
+
+
+def setup_logging():
+    """Journal dans ~/.local/share/postitte/postitte.log (2 × 1 Mo maximum).
+    Il ne contient jamais le texte des notes."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE, maxBytes=1_000_000, backupCount=1, encoding="utf-8")
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)-7s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    log.addHandler(handler)
+    if sys.stderr is not None and sys.stderr.isatty():
+        log.addHandler(logging.StreamHandler())
+    log.setLevel(logging.DEBUG)
+
+    def excepthook(exc_type, exc, tb):
+        log.critical("Erreur non gérée", exc_info=(exc_type, exc, tb))
+        sys.__excepthook__(exc_type, exc, tb)
+    sys.excepthook = excepthook  # PyGObject y envoie aussi les erreurs des callbacks GTK
+
+
+def log_environment():
+    display = Gdk.Display.get_default()
+    wm = "?"
+    try:
+        gi.require_version("GdkX11", "3.0")
+        from gi.repository import GdkX11
+        screen = Gdk.Screen.get_default()
+        if isinstance(screen, GdkX11.X11Screen):
+            wm = screen.get_window_manager_name()
+    except (ImportError, ValueError) as err:
+        wm = f"inconnu ({err})"
+    env = {k: os.environ.get(k, "") for k in (
+        "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "WAYLAND_DISPLAY", "DISPLAY", "GDK_BACKEND")}
+    log.info("=== Postitte %s démarre (pid %d) ===", __version__, os.getpid())
+    log.info("Système : %s, Python %s, GTK %d.%d.%d, installé depuis %s",
+             platform.platform(), platform.python_version(),
+             Gtk.get_major_version(), Gtk.get_minor_version(), Gtk.get_micro_version(),
+             "le .deb" if INSTALLED_FROM_DEB else "install.sh / sources")
+    log.info("Affichage : %s, gestionnaire de fenêtres : %s", type(display).__name__, wm)
+    log.info("Environnement : %s", ", ".join(f"{k}={v or '(vide)'}" for k, v in env.items()))
+
+
+def print_logs():
+    try:
+        with open(LOG_FILE, encoding="utf-8") as f:
+            sys.stdout.write(f.read())
+    except FileNotFoundError:
+        print("Aucun journal pour l'instant.")
+    print(f"\n(Journal : {LOG_FILE})")
+
 
 # nom -> (couleur du corps, couleur de l'en-tête)
 COLORS = {
@@ -212,8 +269,10 @@ class UpdateDialog(Gtk.Dialog):
         try:
             download_and_install(self.info)
         except Exception as err:  # réseau, archive, script d'installation…
+            log.exception("Échec de la mise à jour vers %s", self.info["version"])
             GLib.idle_add(self._on_failed, str(err))
         else:
+            log.info("Mise à jour vers %s installée, redémarrage", self.info["version"])
             GLib.idle_add(self.app.restart)
 
     def _on_failed(self, message):
@@ -231,6 +290,7 @@ class NoteWindow(Gtk.Window):
         super().__init__(application=app, title="Postitte")
         self.app = app
         self.data = data
+        self.tag = f"note {data['id'][:6]}"
 
         self.set_decorated(False)
         self.set_skip_taskbar_hint(True)
@@ -271,6 +331,10 @@ class NoteWindow(Gtk.Window):
 
         self.connect("configure-event", self._on_configure)
         self.connect("key-press-event", self._on_key_press)
+        self.connect("focus-in-event", lambda *_: log.debug("%s : focus clavier reçu", self.tag))
+        self.connect("focus-out-event", lambda *_: log.debug("%s : focus clavier perdu", self.tag))
+        self.connect("window-state-event", self._on_window_state)
+        self.connect("map-event", self._on_map)
 
         self.apply_color(data["color"])
         self.apply_font_size()
@@ -370,19 +434,52 @@ class NoteWindow(Gtk.Window):
 
     # --- Événements -----------------------------------------------------
 
-    def _take_focus(self, event):
+    def _focus_state(self):
+        gdk_window = self.get_window()
+        state = gdk_window.get_state() if gdk_window else 0
+        return (f"active={self.is_active()} toplevel_focus={self.has_toplevel_focus()} "
+                f"texte_focus={self.textview.has_focus()} "
+                f"focused={bool(state & Gdk.WindowState.FOCUSED)} "
+                f"dessous={bool(state & Gdk.WindowState.BELOW)}")
+
+    def _take_focus(self, event, where):
         """Réclame le focus clavier au gestionnaire de fenêtres : sous GNOME, une
         fenêtre gardée sous les autres ne le récupère pas toujours seule au clic."""
+        log.info("%s : clic %s (bouton %d, t=%d) ; avant : %s",
+                 self.tag, where, event.button, event.time, self._focus_state())
         if not self.is_active():
+            log.info("%s : demande du focus au gestionnaire de fenêtres", self.tag)
             self.present_with_time(event.time)
+        GLib.timeout_add(300, self._log_focus_after_click)
+
+    def _log_focus_after_click(self):
+        ok = self.is_active() and self.textview.has_focus()
+        log.log(logging.INFO if ok else logging.WARNING,
+                "%s : 0,3 s après le clic : %s", self.tag, self._focus_state())
+        return False
+
+    def _on_window_state(self, _widget, event):
+        names = [n for n in ("FOCUSED", "BELOW", "ABOVE", "STICKY", "WITHDRAWN", "ICONIFIED")
+                 if event.changed_mask & getattr(Gdk.WindowState, n)]
+        if names:
+            new = event.new_window_state
+            log.debug("%s : état fenêtre %s", self.tag, ", ".join(
+                f"{n}={'oui' if new & getattr(Gdk.WindowState, n) else 'non'}" for n in names))
+        return False
+
+    def _on_map(self, *_args):
+        x, y = self.get_position()
+        w, h = self.get_size()
+        log.info("%s : affichée en %d,%d (%d×%d) ; %s", self.tag, x, y, w, h, self._focus_state())
+        return False
 
     def _on_text_press(self, _widget, event):
-        self._take_focus(event)
+        self._take_focus(event, "dans le texte")
         self.textview.grab_focus()
         return False  # laisse le TextView placer le curseur
 
     def _on_header_press(self, _widget, event):
-        self._take_focus(event)
+        self._take_focus(event, "sur la barre")
         if event.button == 1 and event.type == Gdk.EventType.BUTTON_PRESS:
             self.begin_move_drag(event.button, int(event.x_root), int(event.y_root), event.time)
         return False
@@ -432,6 +529,10 @@ class NoteWindow(Gtk.Window):
         return True
 
     def _on_key_press(self, _widget, event):
+        if not self.textview.has_focus():
+            # Jamais la touche elle-même : le journal ne doit pas contenir le texte.
+            log.warning("%s : touche reçue mais le texte n'a pas le focus ; %s",
+                        self.tag, self._focus_state())
         if not event.state & Gdk.ModifierType.CONTROL_MASK:
             return False
         key = Gdk.keyval_name(event.keyval)
@@ -486,8 +587,10 @@ class PostitteApp(Gtk.Application):
 
     def do_command_line(self, command_line):
         args = command_line.get_arguments()[1:]
+        log.info("Ligne de commande : %s", " ".join(args) or "(aucun argument)")
         if not self.loaded:
             self.loaded = True
+            log_environment()
             for data in self.load():
                 self._open(data)
             if not self.notes or "--new" in args:
@@ -500,6 +603,7 @@ class PostitteApp(Gtk.Application):
         return 0
 
     def do_shutdown(self):
+        log.info("Arrêt de Postitte")
         self.save_now()
         Gtk.Application.do_shutdown(self)
 
@@ -556,9 +660,9 @@ class PostitteApp(Gtk.Application):
         try:
             info = fetch_latest_release()
         except Exception as err:  # hors ligne, pas encore de release, limite d'API…
-            print(f"Postitte : vérification des mises à jour impossible : {err}",
-                  file=sys.stderr)
+            log.warning("Vérification des mises à jour impossible : %s", err)
             return
+        log.info("Dernière version publiée : %s (installée : %s)", info["version"], __version__)
         if parse_version(info["version"]) > parse_version(__version__):
             GLib.idle_add(self._on_update_found, info)
 
@@ -603,7 +707,7 @@ class PostitteApp(Gtk.Application):
         except FileNotFoundError:
             return []
         except (OSError, ValueError) as err:
-            print(f"Postitte : impossible de lire {DATA_FILE} : {err}", file=sys.stderr)
+            log.error("Impossible de lire %s : %s", DATA_FILE, err)
             return []
         result = []
         for note in notes:
@@ -639,4 +743,8 @@ class PostitteApp(Gtk.Application):
 
 
 if __name__ == "__main__":
+    if "--logs" in sys.argv[1:]:
+        print_logs()
+        sys.exit(0)
+    setup_logging()
     sys.exit(PostitteApp().run(sys.argv))

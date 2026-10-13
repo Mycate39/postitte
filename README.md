@@ -41,6 +41,14 @@ Postitte s'installe alors pour votre utilisateur uniquement (`~/.local`).
 
 Les notes sont enregistrées dans `~/.local/share/postitte/notes.json`.
 
+## Journal (en cas de problème)
+
+Postitte tient un journal dans `~/.local/share/postitte/postitte.log` : démarrage, environnement (Wayland/X11, gestionnaire de fenêtres), clics et focus des notes, mises à jour, erreurs. Il ne contient jamais le texte des notes. Pour l'afficher :
+
+```bash
+postitte --logs
+```
+
 ## Mises à jour
 
 Au démarrage, puis toutes les 6 heures, Postitte vérifie s'il existe une nouvelle [release GitHub](https://github.com/Mycate39/postitte/releases). Si oui, une fenêtre propose de l'installer et un bouton **⬆** apparaît sur les notes. Cliquez sur **Mettre à jour** : Postitte télécharge la nouvelle version, l'installe et redémarre. Si vous l'avez installé avec le `.deb`, Ubuntu vous demande votre mot de passe. Vos notes ne sont pas touchées.
