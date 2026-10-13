@@ -235,7 +235,10 @@ class NoteWindow(Gtk.Window):
         self.set_decorated(False)
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
-        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        # Fenêtre « normale » : GNOME refuse le focus clavier aux fenêtres
+        # utilitaires sans parent une fois qu'elles l'ont perdu.
+        self.set_type_hint(Gdk.WindowTypeHint.NORMAL)
+        self.set_accept_focus(True)
         self.stick()  # visible sur tous les espaces de travail
         self.set_icon_name("postitte")
         self.get_style_context().add_class("note")
@@ -254,6 +257,7 @@ class NoteWindow(Gtk.Window):
         self.textview.get_buffer().set_text(data["text"])
         self.textview.get_buffer().connect("changed", self._on_text_changed)
         self.textview.connect("scroll-event", self._on_scroll)
+        self.textview.connect("button-press-event", self._on_text_press)
         self.font_provider = Gtk.CssProvider()
         self.textview.get_style_context().add_provider(
             self.font_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1
@@ -366,7 +370,19 @@ class NoteWindow(Gtk.Window):
 
     # --- Événements -----------------------------------------------------
 
+    def _take_focus(self, event):
+        """Réclame le focus clavier au gestionnaire de fenêtres : sous GNOME, une
+        fenêtre gardée sous les autres ne le récupère pas toujours seule au clic."""
+        if not self.is_active():
+            self.present_with_time(event.time)
+
+    def _on_text_press(self, _widget, event):
+        self._take_focus(event)
+        self.textview.grab_focus()
+        return False  # laisse le TextView placer le curseur
+
     def _on_header_press(self, _widget, event):
+        self._take_focus(event)
         if event.button == 1 and event.type == Gdk.EventType.BUTTON_PRESS:
             self.begin_move_drag(event.button, int(event.x_root), int(event.y_root), event.time)
         return False
