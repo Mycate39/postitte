@@ -7,7 +7,12 @@ Des post-it posés sur le bureau Ubuntu. On écrit directement dedans, sans fen�
 1. Téléchargez le fichier **`postitte_X.Y.Z_all.deb`** de la [dernière release](https://github.com/Mycate39/postitte/releases/latest).
 2. Double-cliquez dessus. Le Centre d'applications s'ouvre : cliquez sur **Installer**.
 
-Si le double-clic ne fonctionne pas, ouvrez un terminal dans le dossier de téléchargement et lancez `sudo apt install ./postitte_*_all.deb`.
+Si le double-clic ne fonctionne pas, ouvrez un terminal et lancez :
+
+```bash
+cd ~/Téléchargements   # ou ~/Downloads si Ubuntu est en anglais
+sudo apt install ./postitte_*_all.deb
+```
 
 Postitte apparaît dans le menu des applications et démarre automatiquement à chaque ouverture de session.
 

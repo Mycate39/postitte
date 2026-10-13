@@ -49,6 +49,13 @@ jobs:
             echo "### Installation"
             echo "Téléchargez **postitte_${GITHUB_REF_NAME#v}_all.deb** ci-dessous puis double-cliquez dessus pour l'installer."
             echo
+            echo
+            echo "Si le double-clic ne fonctionne pas, ouvrez un terminal et lancez :"
+            echo '```'
+            echo 'cd ~/Téléchargements'
+            echo 'sudo apt install ./postitte_*_all.deb'
+            echo '```'
+            echo
             echo "Déjà installé ? Postitte vous proposera cette mise à jour automatiquement."
             echo
             echo "## Nouveautés"
